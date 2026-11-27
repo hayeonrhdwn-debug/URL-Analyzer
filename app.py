@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 
@@ -50,61 +49,63 @@ try:
 
     with tab1:
         st.subheader("URL 분석")
+        st.caption("분석할 웹 주소를 입력하면 위험도와 세부 항목을 확인할 수 있습니다.")
 
-        url = st.text_input(
-            "분석할 URL을 입력하세요.",
-            placeholder="https://example.com",
-            key="single_url"
-        )
+        # 1. 입력 영역 (가로로 나란히 배치)
+        col_input, col_btn = st.columns([4, 1], vertical_alignment="bottom")
+        with col_input:
+            url = st.text_input(
+                "분석할 URL을 입력하세요.",
+                placeholder="https://example.com",
+                key="single_url",
+            )
+        with col_btn:
+            clicked = st.button("URL 분석하기", type="primary", use_container_width=True)
 
-        if st.button("URL 분석하기", type="primary"):
-            if not url.strip():
+        if clicked:
+            cleaned_url = url.strip()
+            if not cleaned_url:
                 st.warning("URL을 입력해 주세요.")
             else:
-                result = analyze_url(url)
-                save_analysis(result)
-                st.session_state["single_result"] = result
+                with st.spinner("URL을 분석하는 중..."):
+                    result = analyze_url(cleaned_url)
+                    save_analysis(result)
+                    st.session_state["single_result"] = result
 
+        # 2. 분석 결과 영역
         if "single_result" in st.session_state:
             result = st.session_state["single_result"]
 
+            st.divider()
             st.subheader("분석 결과")
 
-            result_col1, result_col2 = st.columns(2)
+            if isinstance(result, dict):
+                with st.container(border=True):
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("위험 점수", result.get("score", "-"))
+                    m2.metric("판정 결과", result.get("status", result.get("risk", "-")))
+                    m3.metric(
+                        "검사 항목 수",
+                        len(result.get("reasons", [])) if isinstance(result.get("reasons"), list) else "-",
+                    )
 
-            result_col1.metric(
-                "위험 점수",
-                f"{result['risk_score']} / 100"
-            )
+                    if result.get("normalized_url"):
+                        st.markdown(f"**정규화된 URL:** `{result['normalized_url']}`")
 
-            result_col2.metric(
-                "판정 결과",
-                result["status"]
-            )
+                    reasons = result.get("reasons")
+                    if reasons:
+                        st.markdown("**세부 분석 내용**")
+                        if isinstance(reasons, list):
+                            for item in reasons:
+                                st.markdown(f"- {item}")
+                        else:
+                            st.write(reasons)
 
-            if result["status"] == "악성":
-                st.error("악성 URL 데이터베이스에서 일치하는 주소가 발견되었습니다.")
-            elif result["status"] == "의심":
-                st.warning("URL 구조에서 의심스러운 특징이 발견되었습니다.")
-            elif result["status"] == "정상 후보":
-                st.info("정상 후보 데이터베이스에서 일치하는 주소가 발견되었습니다. 안전이 보장되는 것은 아닙니다.")
+                with st.expander("원본 데이터 보기"):
+                    st.json(result)
             else:
-                st.info("현재 데이터베이스와 분석 기준으로 확정할 수 없습니다.")
-
-            st.write("**입력 URL**")
-            st.code(result["url"])
-
-            st.write("**정규화된 URL**")
-            st.code(result["normalized_url"])
-
-            st.write("**분석 근거**")
-            for reason in result["reasons"]:
-                st.write(f"- {reason}")
-
-            st.write("**데이터 출처**")
-            st.write(result["source"])
-
-            st.success("분석 결과가 기록에 저장되었습니다.")
+                with st.container(border=True):
+                    st.write(result)
 
     with tab2:
         st.subheader("CSV 파일 일괄 분석")
