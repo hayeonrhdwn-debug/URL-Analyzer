@@ -4,7 +4,10 @@ from url_analyzer import analyze_url
 
 
 def analyze_batch(dataframe, url_column):
-    """URL 열을 일괄 분석하고 원본 데이터에 분석 결과를 추가한다."""
+    """URL을 일괄 분석하고 원본 데이터에 분석 결과를 추가한다."""
+
+    # 입력 데이터 검증
+    # 기존 테스트에서 확인하는 예외 메시지를 그대로 유지한다.
     if dataframe.empty:
         raise ValueError("분석할 데이터가 없습니다.")
 
@@ -17,17 +20,18 @@ def analyze_batch(dataframe, url_column):
     results = []
 
     for url in dataframe[url_column]:
-        if pd.isna(url) or not str(url).strip():
-            result = {
-                "normalized_url": "",
-                "status": "미확인",
-                "risk_score": 0,
-                "reasons": "URL 값이 비어 있습니다.",
-                "source": "입력값 검증",
-            }
-        else:
-            cleaned_url = str(url).strip()
+        cleaned_url = "" if pd.isna(url) else str(url).strip()
 
+        # 빈 URL과 분석 실패 시 공통으로 사용하는 기본 결과
+        result = {
+            "normalized_url": cleaned_url,
+            "status": "미확인",
+            "risk_score": 0,
+            "reasons": "URL 값이 비어 있습니다.",
+            "source": "입력값 검증",
+        }
+
+        if cleaned_url:
             try:
                 analysis = analyze_url(cleaned_url)
 
@@ -40,25 +44,22 @@ def analyze_batch(dataframe, url_column):
                 }
 
             except Exception as error:
-                # 한 행의 분석 오류가 전체 배치를 중단하지 않도록 한다.
-                result = {
-                    "normalized_url": cleaned_url,
-                    "status": "미확인",
-                    "risk_score": 0,
+                # 개별 URL의 오류가 전체 분석을 중단하지 않게 한다.
+                result.update({
                     "reasons": (
-                        f"URL 분석 중 오류가 발생했습니다. "
+                        "URL 분석 중 오류가 발생했습니다. "
                         f"({type(error).__name__}: {error})"
                     ),
                     "source": "분석 오류",
-                }
+                })
 
+        # 성공, 빈 값, 오류 모두 URL 하나당 한 번만 추가한다.
         results.append(result)
 
     result_df = dataframe.copy().reset_index(drop=True)
     analysis_df = pd.DataFrame(results)
 
-    # 분석 결과와 이름이 겹치는 원본 열은 input_ 접두어로 보존한다.
-    # 해당 이름도 이미 존재하면 숫자를 붙여 중복을 방지한다.
+    # 원본 컬럼과 분석 결과 컬럼의 이름 충돌을 한 곳에서 처리한다.
     used_columns = set(result_df.columns) | set(analysis_df.columns)
     rename_map = {}
 
@@ -84,12 +85,12 @@ def analyze_batch(dataframe, url_column):
 
 def get_batch_summary(result_df):
     """분석 결과의 상태별 개수를 반환한다."""
+    status_counts = result_df["status"].value_counts()
+
     return {
         "total": len(result_df),
-        "malicious": int((result_df["status"] == "악성").sum()),
-        "suspicious": int((result_df["status"] == "의심").sum()),
-        "normal_candidate": int(
-            (result_df["status"] == "정상 후보").sum()
-        ),
-        "unknown": int((result_df["status"] == "미확인").sum()),
+        "malicious": int(status_counts.get("악성", 0)),
+        "suspicious": int(status_counts.get("의심", 0)),
+        "normal_candidate": int(status_counts.get("정상 후보", 0)),
+        "unknown": int(status_counts.get("미확인", 0)),
     }
