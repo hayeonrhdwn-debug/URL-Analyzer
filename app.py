@@ -1,248 +1,217 @@
-import streamlit as st
+import io
 import pandas as pd
+import streamlit as st
 
-from data_loader import load_dataset, get_dataset_summary
-from url_analyzer import analyze_url
 from batch_analyzer import analyze_batch, get_batch_summary
-from history import save_analysis, get_history, get_history_summary
 from dashboard import render_dashboard
-
-
-st.set_page_config(
-    page_title="URL 피싱 분석 시스템",
-    page_icon="🛡️",
-    layout="wide"
+from history import (
+    get_history,
+    get_history_summary,
+    initialize_history,
+    save_analysis,
 )
+from url_analyzer import analyze_url
 
 
-@st.cache_data
-def get_dataset():
-    return load_dataset()
+def _extract_analysis_payload(raw_result):
+    """analyze_url 반환 형식이 dict 또는 튜플이어도 일관된 형태로 정규화한다."""
+    if isinstance(raw_result, tuple):
+        payload = raw_result[0] if raw_result else {}
+    else:
+        payload = raw_result
+
+    if not isinstance(payload, dict):
+        return {"raw": payload}
+    return payload
 
 
-@st.cache_data
-def get_summary():
-    return get_dataset_summary(get_dataset())
+def _render_single_result(url: str, payload: dict):
+    """단일 URL 분석 결과를 한 곳에서 일관되게 렌더링한다."""
+    with st.container(border=True):
+        st.subheader("분석 결과")
+        st.caption(f"대상 URL: {url}")
+
+        risk_score = payload.get("risk_score", payload.get("score", "N/A"))
+        verdict = payload.get(
+            "verdict", payload.get("status", payload.get("label", "분석 완료"))
+        )
+        confidence = payload.get("confidence", payload.get("confidence_score", "-"))
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("위험도 / 점수", risk_score)
+        with col2:
+            st.metric("판정 결과", verdict)
+        with col3:
+            st.metric("신뢰도", confidence)
+
+        details = {
+            k: v
+            for k, v in payload.items()
+            if k
+            not in {
+                "risk_score",
+                "score",
+                "verdict",
+                "status",
+                "label",
+                "confidence",
+                "confidence_score",
+            }
+        }
+        if details:
+            with st.expander("상세 분석 정보 보기", expanded=False):
+                st.json(details)
 
 
-st.title("🛡️ URL 피싱 분석 시스템")
-st.write("URL 데이터베이스와 구조 분석을 활용한 피싱 URL 탐지 시스템")
+def _render_single_url_tab():
+    """단일 URL 입력 및 분석 결과 탭."""
+    st.header("단일 URL 분석")
 
-try:
-    dataset = get_dataset()
-    summary = get_summary()
+    if "single_analysis_result" not in st.session_state:
+        st.session_state.single_analysis_result = None
 
-    col1, col2, col3 = st.columns(3)
-
-    col1.metric("전체 데이터", f"{summary['total']:,}건")
-    col2.metric("악성 URL", f"{summary['malicious']:,}건")
-    col3.metric("정상 후보 URL", f"{summary['normal_candidate']:,}건")
-
-    st.divider()
-
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "단일 URL 분석",
-        "CSV 일괄 분석",
-        "분석 기록",
-        "통계 대시보드"
-    ])
-
-    with tab1:
-        st.subheader("URL 분석")
-        st.caption("분석할 웹 주소를 입력하면 위험도와 세부 항목을 확인할 수 있습니다.")
-
-        # 1. 입력 영역 (가로로 나란히 배치)
-        col_input, col_btn = st.columns([4, 1], vertical_alignment="bottom")
-        with col_input:
-            url = st.text_input(
-                "분석할 URL을 입력하세요.",
-                placeholder="https://example.com",
-                key="single_url",
-            )
-        with col_btn:
-            clicked = st.button("URL 분석하기", type="primary", use_container_width=True)
-
-        if clicked:
-            cleaned_url = url.strip()
-            if not cleaned_url:
-                st.warning("URL을 입력해 주세요.")
-            else:
-                with st.spinner("URL을 분석하는 중..."):
-                    result = analyze_url(cleaned_url)
-                    save_analysis(result)
-                    st.session_state["single_result"] = result
-
-        # 2. 분석 결과 영역
-        if "single_result" in st.session_state:
-            result = st.session_state["single_result"]
-
-            st.divider()
-            st.subheader("분석 결과")
-
-            if isinstance(result, dict):
-                with st.container(border=True):
-                    m1, m2, m3 = st.columns(3)
-                    m1.metric("위험 점수", result.get("score", "-"))
-                    m2.metric("판정 결과", result.get("status", result.get("risk", "-")))
-                    m3.metric(
-                        "검사 항목 수",
-                        len(result.get("reasons", [])) if isinstance(result.get("reasons"), list) else "-",
-                    )
-
-                    if result.get("normalized_url"):
-                        st.markdown(f"**정규화된 URL:** `{result['normalized_url']}`")
-
-                    reasons = result.get("reasons")
-                    if reasons:
-                        st.markdown("**세부 분석 내용**")
-                        if isinstance(reasons, list):
-                            for item in reasons:
-                                st.markdown(f"- {item}")
-                        else:
-                            st.write(reasons)
-
-                with st.expander("원본 데이터 보기"):
-                    st.json(result)
-            else:
-                with st.container(border=True):
-                    st.write(result)
-
-    with tab2:
-        st.subheader("CSV 파일 일괄 분석")
-
-        st.write("URL이 포함된 CSV 파일을 업로드하여 여러 주소를 한 번에 분석합니다.")
-
-        uploaded_file = st.file_uploader(
-            "CSV 파일 선택",
-            type=["csv"],
-            key="batch_file"
+    with st.container(border=True):
+        url_input = st.text_input(
+            "분석할 URL을 입력하세요",
+            placeholder="https://example.com",
+            key="single_url_input",
+        )
+        analyze_clicked = st.button(
+            "URL 분석하기", type="primary", key="single_analyze_btn"
         )
 
-        if uploaded_file is not None:
-            try:
-                uploaded_df = pd.read_csv(
-                    uploaded_file,
-                    encoding="utf-8-sig"
-                )
-
-                if uploaded_df.empty:
-                    st.warning("CSV 파일에 분석할 데이터가 없습니다.")
-                else:
-                    st.write("**업로드 데이터 미리보기**")
-                    st.dataframe(
-                        uploaded_df.head(10),
-                        use_container_width=True
-                    )
-
-                    url_column = st.selectbox(
-                        "URL이 들어 있는 열을 선택하세요.",
-                        options=uploaded_df.columns
-                    )
-
-                    if st.button("전체 URL 분석하기", type="primary"):
-                        with st.spinner("URL을 분석하고 있습니다..."):
-                            result_df = analyze_batch(
-                                uploaded_df,
-                                url_column
-                            )
-
-                            for _, row in result_df.iterrows():
-                                save_analysis({
-                                    "url": str(row[url_column]),
-                                    "normalized_url": row["normalized_url"],
-                                    "status": row["status"],
-                                    "risk_score": int(row["risk_score"]),
-                                    "source": row["source"]
-                                })
-
-                            st.session_state["batch_result"] = result_df
-                            st.success("분석 결과가 기록에 저장되었습니다.")
-
-                if "batch_result" in st.session_state:
-                    result_df = st.session_state["batch_result"]
-                    batch_summary = get_batch_summary(result_df)
-
-                    st.divider()
-                    st.subheader("일괄 분석 결과")
-
-                    result_col1, result_col2, result_col3, result_col4, result_col5 = st.columns(5)
-
-                    result_col1.metric("전체 분석", f"{batch_summary['total']:,}건")
-                    result_col2.metric("악성", f"{batch_summary['malicious']:,}건")
-                    result_col3.metric("의심", f"{batch_summary['suspicious']:,}건")
-                    result_col4.metric("정상 후보", f"{batch_summary['normal_candidate']:,}건")
-                    result_col5.metric("미확인", f"{batch_summary['unknown']:,}건")
-
-                    st.dataframe(
-                        result_df,
-                        use_container_width=True
-                    )
-
-                    csv_data = result_df.to_csv(
-                        index=False
-                    ).encode("utf-8-sig")
-
-                    st.download_button(
-                        "분석 결과 CSV 다운로드",
-                        data=csv_data,
-                        file_name="url_analysis_result.csv",
-                        mime="text/csv"
-                    )
-
-                    st.caption("정상 후보는 안전성이 독립적으로 검증된 결과가 아닙니다.")
-
-            except UnicodeDecodeError:
-                st.error("CSV 인코딩을 읽을 수 없습니다. UTF-8 형식으로 저장한 파일을 사용해 주세요.")
-            except Exception as error:
-                st.error(f"CSV 처리 중 오류가 발생했습니다: {error}")
-
-    with tab3:
-        st.subheader("URL 분석 기록")
-
-        history_summary = get_history_summary()
-
-        history_col1, history_col2, history_col3, history_col4, history_col5 = st.columns(5)
-
-        history_col1.metric("전체 기록", f"{history_summary['total']:,}건")
-        history_col2.metric("악성", f"{history_summary['malicious']:,}건")
-        history_col3.metric("의심", f"{history_summary['suspicious']:,}건")
-        history_col4.metric("정상 후보", f"{history_summary['normal_candidate']:,}건")
-        history_col5.metric("미확인", f"{history_summary['unknown']:,}건")
-
-        history_df = get_history()
-
-        if history_df.empty:
-            st.info("아직 저장된 분석 기록이 없습니다.")
+    if analyze_clicked:
+        cleaned_url = url_input.strip()
+        if not cleaned_url:
+            st.warning("분석할 URL을 먼저 입력해 주세요.")
         else:
-            st.dataframe(
-                history_df,
-                use_container_width=True,
-                hide_index=True
-            )
+            try:
+                with st.spinner("URL을 분석하는 중입니다..."):
+                    raw_result = analyze_url(cleaned_url)
+                payload = _extract_analysis_payload(raw_result)
+                record = {"url": cleaned_url, **payload}
+                save_analysis(record)
+                st.session_state.single_analysis_result = {
+                    "url": cleaned_url,
+                    "payload": payload,
+                }
+            except Exception as exc:
+                st.session_state.single_analysis_result = None
+                st.error(f"URL 분석 중 오류가 발생했습니다: {exc}")
 
-            history_csv = history_df.to_csv(
-                index=False
-            ).encode("utf-8-sig")
+    saved = st.session_state.single_analysis_result
+    if saved:
+        _render_single_result(saved["url"], saved["payload"])
 
-            st.download_button(
-                "분석 기록 CSV 다운로드",
-                data=history_csv,
-                file_name="analysis_history.csv",
-                mime="text/csv"
-            )
 
-    with tab4:
-        render_dashboard()
+def _render_batch_tab():
+    """일괄 URL 분석 탭."""
+    st.header("일괄 URL 분석")
 
-    st.divider()
-
-    st.subheader("데이터 출처별 현황")
-    st.bar_chart(summary["sources"])
-
-    st.caption(
-        "위험 점수는 확률이 아닌 규칙 기반 점수입니다. "
-        "미확인 결과가 안전을 보장하지는 않습니다."
+    uploaded_file = st.file_uploader(
+        "URL 목록 CSV 파일 업로드", type=["csv"], key="batch_csv_uploader"
+    )
+    raw_urls_text = st.text_area(
+        "또는 URL을 한 줄에 하나씩 입력",
+        placeholder="https://example.com\nhttps://example.org",
+        height=120,
+        key="batch_urls_textarea",
     )
 
-except Exception as error:
-    st.error(f"프로그램 실행 중 오류가 발생했습니다: {error}")
+    df = None
+    url_column = "url"
+
+    if uploaded_file is not None:
+        df = pd.read_csv(io.BytesIO(uploaded_file.getvalue()))
+        url_column = st.selectbox(
+            "URL 컬럼 선택", options=list(df.columns), key="batch_url_col"
+        )
+    elif raw_urls_text.strip():
+        urls = [line.strip() for line in raw_urls_text.splitlines() if line.strip()]
+        df = pd.DataFrame({url_column: urls})
+
+    if st.button("일괄 분석 시작", type="primary", key="batch_analyze_btn"):
+        if df is None or df.empty:
+            st.warning("CSV 파일을 업로드하거나 URL을 입력해 주세요.")
+        else:
+            try:
+                with st.spinner("일괄 분석을 진행하는 중입니다..."):
+                    result_df = analyze_batch(df, url_column)
+                    summary = get_batch_summary(result_df)
+
+                if isinstance(summary, dict) and summary:
+                    cols = st.columns(min(len(summary), 4))
+                    for idx, (k, v) in enumerate(summary.items()):
+                        with cols[idx % len(cols)]:
+                            st.metric(str(k), v)
+
+                st.dataframe(result_df, use_container_width=True)
+            except Exception as exc:
+                st.error(f"일괄 분석 중 오류가 발생했습니다: {exc}")
+
+
+def _render_history_tab():
+    """분석 기록 탭."""
+    st.header("분석 기록")
+
+    summary = get_history_summary()
+    if isinstance(summary, dict) and summary:
+        cols = st.columns(min(len(summary), 4))
+        for idx, (k, v) in enumerate(summary.items()):
+            with cols[idx % len(cols)]:
+                st.metric(str(k), v)
+
+    limit = st.slider("표시할 기록 수", min_value=10, max_value=200, value=100, step=10)
+    records = get_history(limit=limit)
+
+    if not records:
+        st.info("저장된 분석 기록이 없습니다.")
+    else:
+        st.dataframe(records, use_container_width=True)
+
+
+def main():
+    st.set_page_config(page_title="URL Analyzer", page_icon="🔍", layout="wide")
+    initialize_history()
+    st.title("🔍 URL Analyzer")
+
+    tab1, tab2, tab3, tab4 = st.tabs(
+        ["단일 URL 분석", "일괄 분석", "대시보드", "분석 기록"]
+    )
+
+    with tab1:
+        _render_single_url_tab()
+
+    with tab2:
+        _render_batch_tab()
+
+    with tab3:
+        render_dashboard()
+
+    with tab4:
+        _render_history_tab()
+def _render_history_tab():
+    """분석 기록 탭."""
+    st.header("분석 기록")
+
+    summary = get_history_summary()
+    if isinstance(summary, dict) and summary:
+        cols = st.columns(min(len(summary), 4))
+        for idx, (k, v) in enumerate(summary.items()):
+            with cols[idx % len(cols)]:
+                st.metric(str(k), v)
+
+    limit = st.slider("표시할 기록 수", min_value=10, max_value=200, value=100, step=10)
+    records = get_history(limit=limit)
+
+    is_empty = records is None or (
+        records.empty if isinstance(records, pd.DataFrame) else len(records) == 0
+    )
+    if is_empty:
+        st.info("저장된 분석 기록이 없습니다.")
+    else:
+        st.dataframe(records, use_container_width=True)
+
+if __name__ == "__main__":
+    main()
