@@ -1,5 +1,5 @@
-import streamlit as st
 import pandas as pd
+import streamlit as st
 
 from history import get_history
 
@@ -18,7 +18,7 @@ COLUMN_LABELS = {
 
 
 def prepare_history(history_df):
-    """통계에 사용할 값을 정리합니다. 원본 DB는 변경하지 않습니다."""
+    """화면 표시와 통계용 데이터를 정리하며 DB는 변경하지 않습니다."""
     df = history_df.copy()
 
     df["status"] = (
@@ -42,12 +42,11 @@ def prepare_history(history_df):
         errors="coerce",
     )
 
-    # 통계 계산용: 0~100 범위 밖의 점수는 유효하지 않은 값으로 처리
     df["_valid_risk_score"] = df["risk_score"].where(
         df["risk_score"].between(0, 100)
     )
 
-    # SQLite CURRENT_TIMESTAMP로 저장된 기존 시각은 UTC입니다.
+    # 기존 SQLite CURRENT_TIMESTAMP의 저장 기준은 UTC입니다.
     df["_analyzed_at"] = pd.to_datetime(
         df["analyzed_at"],
         errors="coerce",
@@ -70,17 +69,18 @@ def render_dashboard():
 
     st.caption(
         f"전체 저장 기록: {len(df):,}건 · "
-        "아래 통계와 다운로드에는 선택한 필터가 적용됩니다."
+        "아래 통계와 CSV에는 조회 조건이 적용됩니다."
     )
 
-    # ── 검색 및 필터 ──
+    # 1. 조회 조건
     st.markdown("### 조회 조건")
-
-    filter_col1, filter_col2 = st.columns(2)
 
     status_options = STATUS_ORDER + sorted(
         set(df["status"].unique()) - set(STATUS_ORDER)
     )
+    source_options = sorted(df["source"].unique().tolist())
+
+    filter_col1, filter_col2 = st.columns(2)
 
     with filter_col1:
         selected_statuses = st.multiselect(
@@ -91,8 +91,6 @@ def render_dashboard():
         )
 
     with filter_col2:
-        source_options = sorted(df["source"].unique().tolist())
-
         selected_sources = st.multiselect(
             "출처 선택",
             options=source_options,
@@ -118,7 +116,9 @@ def render_dashboard():
         valid_dates = df["_analyzed_at"].dropna()
 
         if valid_dates.empty:
-            st.warning("유효한 분석 날짜가 없어 기간 필터를 사용할 수 없습니다.")
+            st.warning(
+                "유효한 분석 날짜가 없어 기간 필터를 사용할 수 없습니다."
+            )
             return
 
         min_date = valid_dates.min().date()
@@ -148,7 +148,8 @@ def render_dashboard():
             st.error("시작일은 종료일보다 늦을 수 없습니다.")
             return
 
-    filtered = df[
+    # 2. 필터 적용
+    filtered = df.loc[
         df["status"].isin(selected_statuses)
         & df["source"].isin(selected_sources)
     ].copy()
@@ -168,7 +169,9 @@ def render_dashboard():
             .str.contains(keyword, case=False, regex=False)
         )
 
-        filtered = filtered[url_match | normalized_match].copy()
+        filtered = filtered.loc[
+            url_match | normalized_match
+        ].copy()
 
     if use_date_filter:
         start_timestamp = pd.Timestamp(start_date, tz="UTC")
@@ -177,7 +180,7 @@ def render_dashboard():
             + pd.Timedelta(days=1)
         )
 
-        filtered = filtered[
+        filtered = filtered.loc[
             (filtered["_analyzed_at"] >= start_timestamp)
             & (filtered["_analyzed_at"] < end_exclusive)
         ].copy()
@@ -188,7 +191,7 @@ def render_dashboard():
 
     st.divider()
 
-    # ── 요약 통계 ──
+    # 3. 요약 통계
     st.markdown("### 선택 조건 분석 현황")
 
     counts = filtered["status"].value_counts()
@@ -198,10 +201,14 @@ def render_dashboard():
     col1.metric("전체 분석", f"{len(filtered):,}건")
     col2.metric("악성", f"{int(counts.get('악성', 0)):,}건")
     col3.metric("의심", f"{int(counts.get('의심', 0)):,}건")
-    col4.metric("정상 후보", f"{int(counts.get('정상 후보', 0)):,}건")
+    col4.metric(
+        "정상 후보",
+        f"{int(counts.get('정상 후보', 0)):,}건",
+    )
     col5.metric("미확인", f"{int(counts.get('미확인', 0)):,}건")
 
     average_score = filtered["_valid_risk_score"].mean()
+
     unique_urls = (
         filtered["url"]
         .fillna("")
@@ -211,19 +218,26 @@ def render_dashboard():
         .nunique()
     )
 
-    risk_count = filtered["status"].isin(["악성", "의심"]).sum()
+    risk_count = int(
+        filtered["status"].isin(["악성", "의심"]).sum()
+    )
     risk_ratio = risk_count / len(filtered) * 100
 
     extra_col1, extra_col2, extra_col3 = st.columns(3)
 
-    extra_col1.metric(
-        "평균 위험 점수",
-        "계산 불가" if pd.isna(average_score) else f"{average_score:.1f}점",
+    average_label = (
+        "계산 불가"
+        if pd.isna(average_score)
+        else f"{average_score:.1f}점"
     )
+
+    extra_col1.metric("평균 위험 점수", average_label)
     extra_col2.metric("고유 URL", f"{unique_urls:,}개")
     extra_col3.metric("악성·의심 비율", f"{risk_ratio:.1f}%")
 
-    invalid_scores = int(filtered["_valid_risk_score"].isna().sum())
+    invalid_scores = int(
+        filtered["_valid_risk_score"].isna().sum()
+    )
 
     if invalid_scores:
         st.caption(
@@ -238,12 +252,12 @@ def render_dashboard():
     if other_status_count:
         st.caption(
             f"기본 4개 판정 외의 기록 {other_status_count:,}건도 "
-            "전체 분석 건수와 아래 판정 분포에 포함됩니다."
+            "전체 건수와 판정 분포에 포함됩니다."
         )
 
     st.divider()
 
-    # ── 판정 결과 분포 ──
+    # 4. 판정 결과 분포
     st.markdown("### 판정 결과 분포")
 
     display_statuses = STATUS_ORDER + sorted(
@@ -259,28 +273,32 @@ def render_dashboard():
 
     st.bar_chart(status_counts)
 
-    # ── 위험 점수 분포 ──
+    # 5. 위험 점수 분포
     st.markdown("### 위험 점수 분포")
 
-    # right=False: [0, 1), [1, 30), ... [80, 101)
-    risk_bins = pd.cut(
-        filtered["_valid_risk_score"],
-        bins=[0, 1, 30, 60, 80, 101],
-        labels=["0점 이상 1점 미만", "1~29점", "30~59점", "60~79점", "80~100점"],
-        right=False,
-    )
+    valid_scores = filtered["_valid_risk_score"].dropna()
 
-    risk_counts = (
-        risk_bins.value_counts()
-        .sort_index()
-        .rename("분석 건수")
+    risk_counts = pd.Series(
+        [
+            int((valid_scores == 0).sum()),
+            int(((valid_scores > 0) & (valid_scores < 30)).sum()),
+            int(((valid_scores >= 30) & (valid_scores < 60)).sum()),
+            int(((valid_scores >= 60) & (valid_scores < 80)).sum()),
+            int(((valid_scores >= 80) & (valid_scores <= 100)).sum()),
+        ],
+        index=[
+            "0점",
+            "0점 초과~30점 미만",
+            "30점 이상~60점 미만",
+            "60점 이상~80점 미만",
+            "80점 이상~100점 이하",
+        ],
+        name="분석 건수",
     )
 
     st.bar_chart(risk_counts)
-    st.caption("구간 경계: 0 이상 1 미만 / 1 이상 30 미만 / "
-               "30 이상 60 미만 / 60 이상 80 미만 / 80 이상 100 이하")
 
-    # ── 출처별 현황 ──
+    # 6. 출처별 현황
     st.markdown("### 데이터 출처별 분석 현황")
 
     source_counts = (
@@ -291,7 +309,7 @@ def render_dashboard():
 
     st.bar_chart(source_counts)
 
-    # ── 일별 분석 추이 ──
+    # 7. 일별 분석 추이
     st.markdown("### 일별 분석 추이")
 
     dated_records = filtered.dropna(subset=["_analyzed_at"])
@@ -306,7 +324,9 @@ def render_dashboard():
             .size()
         )
 
-        daily_counts.index = daily_counts.index.strftime("%Y-%m-%d")
+        daily_counts.index = daily_counts.index.strftime(
+            "%Y-%m-%d"
+        )
         daily_counts.index.name = "분석일(UTC)"
         daily_counts.name = "분석 건수"
 
@@ -314,10 +334,12 @@ def render_dashboard():
 
     st.divider()
 
-    # ── 기록 조회 및 CSV 다운로드 ──
+    # 8. 기록 표시 및 CSV
     st.markdown("### 분석 기록")
+
     st.caption(
-        f"조건에 맞는 기록: {len(filtered):,}건 · 최신 저장 순으로 표시합니다."
+        f"조건에 맞는 기록: {len(filtered):,}건 · "
+        "최신 저장 순으로 표시합니다."
     )
 
     display_limit = st.selectbox(
@@ -326,9 +348,9 @@ def render_dashboard():
         key="dashboard_display_limit",
     )
 
-    export_df = filtered[list(COLUMN_LABELS)].rename(
-        columns=COLUMN_LABELS
-    )
+    export_df = filtered.loc[
+        :, list(COLUMN_LABELS.keys())
+    ].rename(columns=COLUMN_LABELS)
 
     st.dataframe(
         export_df.head(display_limit),
@@ -336,8 +358,9 @@ def render_dashboard():
         hide_index=True,
     )
 
-    # Excel에서 한글이 깨지지 않도록 UTF-8 BOM을 사용합니다.
-    csv_data = export_df.to_csv(index=False).encode("utf-8-sig")
+    csv_data = export_df.to_csv(index=False).encode(
+        "utf-8-sig"
+    )
 
     st.download_button(
         label="조회 결과 전체 CSV 다운로드",
