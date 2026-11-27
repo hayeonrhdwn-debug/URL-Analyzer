@@ -260,16 +260,9 @@ def render_dashboard():
     # 4. 판정 결과 분포
     st.markdown("### 판정 결과 분포")
 
-    display_statuses = STATUS_ORDER + sorted(
-        set(filtered["status"].unique()) - set(STATUS_ORDER)
-    )
-
-    status_counts = (
-        filtered["status"]
-        .value_counts()
-        .reindex(display_statuses, fill_value=0)
-        .rename("분석 건수")
-    )
+    status_counts = counts.reindex(
+        status_options, fill_value=0
+    ).rename("분석 건수")
 
     st.bar_chart(status_counts)
 

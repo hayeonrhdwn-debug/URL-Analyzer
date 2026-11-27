@@ -59,12 +59,12 @@ def get_history(limit=100):
     limit=0: 컬럼 구조를 유지한 빈 DataFrame
     음수, 정수가 아닌 값, bool: ValueError
     """
-    if limit is not None:
-        if isinstance(limit, bool) or not isinstance(limit, int):
-            raise ValueError("limit는 0 이상의 정수 또는 None이어야 합니다.")
-
-        if limit < 0:
-            raise ValueError("limit는 0 이상이어야 합니다.")
+    if limit is not None and (
+        isinstance(limit, bool)
+        or not isinstance(limit, int)
+        or limit < 0
+    ):
+        raise ValueError("limit는 0 이상의 정수 또는 None이어야 합니다.")
 
     initialize_history()
 
