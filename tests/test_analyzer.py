@@ -53,3 +53,10 @@ def test_risk_calculation():
 
     assert score == 35
     assert len(reasons) >= 2
+
+def test_normalize_url_without_scheme():
+    assert normalize_url("example.com") == "http://example.com/"
+
+
+def test_normalize_url_uppercase_domain_and_fragment():
+    assert normalize_url("HTTPS://EXAMPLE.COM/Login#section") == "https://example.com/Login"
